@@ -374,12 +374,11 @@ void runOnMainQueueWithoutDeadlocking(void (^block)(void)) {
             [items addObject:item];
         }
         else {
-            NSLog(@"Unrecognised toolbar button name or format: %@", JSON);
+            NSLog(@"PSPDFKitPlugin unrecognized toolbar button name or format: %@", JSON);
         }
     }
     return items;
 }
-
 - (void)customBarButtonItemAction:(UIBarButtonItem *)sender {
     NSInteger index = [_pdfController.navigationItem.leftBarButtonItems indexOfObject:sender];
     if (index == NSNotFound) {
@@ -497,6 +496,7 @@ void runOnMainQueueWithoutDeadlocking(void (^block)(void)) {
 }
 
 - (PSPDFDocument *)createXFDFDocumentWithPath:(NSString *)xfdfFilePath {
+  
     // Copy the XFDF file to the ~/Documents foler or create one if we don't have one.
     NSURL *xfdfFileURL = [self writableFileURLWithPath:xfdfFilePath override:NO copyIfNeeded:YES];
 
@@ -668,13 +668,6 @@ void runOnMainQueueWithoutDeadlocking(void (^block)(void)) {
                   @"phoneNumber": @(PSPDFTextCheckingTypePhoneNumber),
                   @"all": @(PSPDFTextCheckingTypeAll)},
 
-            @"PSPDFTextSelectionMenuAction":
-
-                @{@"search": @(PSPDFTextSelectionMenuActionSearch),
-                  @"define": @(PSPDFTextSelectionMenuActionDefine),
-                  @"wikipedia": @(PSPDFTextSelectionMenuActionWikipedia),
-                  @"speak": @(PSPDFTextSelectionMenuActionSpeak),
-                  @"all": @(PSPDFTextSelectionMenuActionAll)},
 
             @"PSPDFPageTransition":
 
@@ -1111,14 +1104,17 @@ void runOnMainQueueWithoutDeadlocking(void (^block)(void)) {
 }
 
 - (void)setAllowedMenuActionsForPSPDFViewControllerWithJSON:(NSArray *)options {
-    PSPDFTextSelectionMenuAction menuActions = (PSPDFTextSelectionMenuAction) [self optionsValueForKeys:options ofType:@"PSPDFTextSelectionMenuAction" withDefault:PSPDFTextSelectionMenuActionAll];
-    [_pdfController updateConfigurationWithBuilder:^(PSPDFConfigurationBuilder *builder) {
-        builder.allowedMenuActions = menuActions;
-    }];
+    // Compatibility shim:
+    // Nutrient/PSPDFKit removed the old PSPDFTextSelectionMenuAction /
+    // allowedMenuActions API. Keep accepting the Cordova option so older JS
+    // code does not fail, but do not apply it on newer native SDKs.
+    NSLog(@"PSPDFKitPlugin: allowedMenuActions is no longer supported by this PSPDFKit/Nutrient SDK version. Ignoring value: %@", options);
 }
 
 - (NSArray *)allowedMenuActionsAsJSON {
-    return [self optionKeysForValue:_pdfController.configuration.allowedMenuActions ofType:@"PSPDFTextSelectionMenuAction"];
+    // The old API exposed selected text menu actions such as search, define,
+    // wikipedia and speak. This is no longer available through configuration.
+    return @[];
 }
 
 - (void)setShouldAskForAnnotationUsernameForPSPDFViewControllerWithJSON:(NSNumber *)shouldAskForAnnotationUsername {
@@ -1472,14 +1468,34 @@ void runOnMainQueueWithoutDeadlocking(void (^block)(void)) {
 }
 
 - (void)showAnnotationToolbar:(CDVInvokedUrlCommand *)command {
-    // Must be in document view mode when showing annotation toolbar
-    [_pdfController setViewMode:PSPDFViewModeDocument animated:YES];
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (!_pdfController || !_pdfController.document || !_pdfController.document.isValid) {
+            [self.commandDelegate sendPluginResult:[CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR
+                                                                     messageAsString:@"No valid PDF document is currently open."]
+                                        callbackId:command.callbackId];
+            return;
+        }
 
-    [_pdfController.annotationToolbarController updateHostView:nil container:nil viewController:_pdfController];
-    [_pdfController.annotationToolbarController showToolbarAnimated:YES completion:^(BOOL finished) {
-        [self.commandDelegate sendPluginResult:[CDVPluginResult resultWithStatus:CDVCommandStatus_OK]
+        [_pdfController setViewMode:PSPDFViewModeDocument animated:NO];
+
+        UIBarButtonItem *annotationButtonItem = _pdfController.annotationButtonItem;
+
+        if (annotationButtonItem.target && annotationButtonItem.action) {
+
+            [[UIApplication sharedApplication] sendAction:annotationButtonItem.action
+                                                       to:annotationButtonItem.target
+                                                     from:nil
+                                                 forEvent:nil];
+
+            [self.commandDelegate sendPluginResult:[CDVPluginResult resultWithStatus:CDVCommandStatus_OK]
+                                        callbackId:command.callbackId];
+            return;
+        }
+
+        [self.commandDelegate sendPluginResult:[CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR
+                                                                 messageAsString:@"Annotation button item has no target/action."]
                                     callbackId:command.callbackId];
-    }];
+    });
 }
 
 - (void)toggleAnnotationToolbar:(CDVInvokedUrlCommand *)command {
